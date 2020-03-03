@@ -1,0 +1,615 @@
+---
+title: "Social Network Analysis: NY Citi Bike Sharing"
+author: "Group A - Arif Can Aksoy, Jorge Eguino Ossio, Yongchan Lee"
+date: "2/28/2020"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+require("geosphere")
+require("dplyr")
+require("igraph")
+require("ggplot2")
+require("ggraph")
+require("knitr")
+require("ggmap")
+```
+
+Analysis of the Citi Bike Sharing in New York
+======
+
+```{r, fig.cap = "NY Citi Bike", fig.align = "center"}
+include_graphics("https://d21xlh2maitm24.cloudfront.net/nyc/day-passes.png?mtime=20170331123924")
+```
+
+## 1. INTRODUCTION
+-------
+
+### 1.1 Understanding the data
+
+After carefully reviewing different datasets with the objective of getting meaningful insights and a solid analysis, we selected the ‘Citi Bike System Data’ dataset for New York. It provides information about the rides completed in the city with the Citi Bikes service. The data is very recent, as it has been gathered for bike rides in January 2020. The dataset contains information about the time, date and station of both the start and end of the ride. It also provides the longitude and latitude of the station. With regards to the bike users, we can see what type of user it is (customer, annual member), gender and year of birth, which will be key to develop a comprehensive analysis for our purpose. 
+
+### 1.2 Context
+
+The Citi Bike System in New York has been growing and is increasingly becoming one of the best options to move around the city. For this reason, the service needs to grow not only in terms of quantity of station and bikes, but also in terms of quality. The insights from these network analysis is very relevant for this purpose, and it can be also leveraged by other areas of Citi. Motivat, the leading company in bike sharing systems in the United States, is currently operating Citi Bike. Within its partnership with Citi, Motivate has agreed to share data and results of analysis performed with the bank, so they can make use of it for different purposes. Citi Bike has experienced considerable growth since May 2019, when renting a bike has become available from the Lyft app. For this and many reasons, the service needs to get new customers and retain current frequent users, which requires many enhancements to the current service.
+
+The bank as a whole is currently entering into a services expansion phase, which has to be managed by the Customer Engagement team. This expansion involves a significant increase in points of services for different customer segments. The Citi bike data set is a key component for the decision making process. With the insights and analysis performed, Citi will be able **to determine more accurately where to place new points of services, such as branches, ATMs, kiosks and more**. Citi will have a better understanding of the users by **profiling** them and knowing which are the **most frequent routes** that they take in New York, and based on that, **offer new and more personalized services** to current and potential new customers. This shows that bike rides are not only a new and useful way that Citi and Motivate provide to people in terms of transportation, but the data that is gathered can help them in many ways that are much more than just the bike rides.
+
+### 1.3 Methods and tools
+
+To understand the the Citi Bike System, we applied multiple social networks principles to be able to analyze the relationship between stations, users, trips and more. The analysis has been mainly performed in R	We have also leveraged Kepler, an open source geospatial analysis tool for large scale datasets. Our primary goal to use Kepler was to make the analysis more visual, however, we encountered some limitation in the way that the tool displayed so many stations in the map lacking filtering.
+
+
+
+## 2. VARIABLES EXPLANATION & DATA TRANSFORMATION
+------
+
+### 2.1 Data sampling
+
+The original dataset for the Citi Bike System that has been selected for the analysis contains around 1,250,000 bike rides. Given its size, the analysis has been performed with a *sample of 10,000 rides*. This is mainly because this has been made with graphs to show the network from different perspectives, so it is easier to do it with a sample instead of the entire database considering computational sources.
+
+
+```{r}
+setwd("MODIFY YOUR PATH WHERE CSV DATASET EXISTS")
+
+# Import the dataset, citibike NewYork Bike Ridership for January, 2020
+df_journeys <- read.csv("202001-citibike-tripdata.csv", 1)
+#Instead of analysing all, 1.25M records 10.000 rows seem to be enough
+set.seed(42)
+df_journeys1 <- df_journeys[sample(1:nrow(df_journeys), 10000, replace = FALSE),]
+
+str(df_journeys1)
+```
+
+### 2.2 Creating the “Age” attribute
+
+The original dataset provides us with the customer’s date of birth. It is very important to segment users based on their age, because that way Citi has a good idea of what specific products to offer and/or types of customer service to provide based on the customer’s age.. For this reason, based on the date of birth,we have created an “Age” column, dividing customers into 3 categories: Young, Middle Age and Elderly. We also have Gender information for each bike user. For this attribute, we have removed the outliers, so the dataset considers riders from **17 to 90 years old**, which is a pretty realistic assumption.
+
+```{r}
+# based on birth.year column, first age is calculated...
+for (i in 1:nrow(df_journeys1)) {
+  df_journeys1$age[i] <- 2020 - df_journeys1$birth.year[i]
+}
+
+# check-out age for outlier
+df_journeys1$age[which.max(df_journeys1$age)]
+df_journeys1$age[which.min(df_journeys1$age)]
+# +90 is regarded as outliers and we better take them out
+df_journeys1 <- df_journeys1[df_journeys1$age <= 90,]
+
+#... and then ageGroup field is created to make further analysis users
+df_journeys1$ageGroup <- cut(df_journeys1$age, breaks=c(0,30,59,90), labels=c("young","middleage","eldery"))
+```
+
+### 2.3 Creating the “Distance between stations” attribute
+
+Based on the latitude and longitude provided for each bike station, we are able to know the distance between each of them. It allows us to know the distance of every trip, from the start to the end-point. This is important to show which roads between stations take the longest and determine if some of them would **require additional bike stations** and in which existent stations it would make sense to **add new bikes with a longer lasting battery** that are now available from our bike manufacturer. For this attribute, we installed the “geosphere” package in R. For this specific case, the bike rider could take any road alternative to go from the start to the end point. Given this, we have assumed that they will take the shortest possible way.
+
+```{r}
+#Compute distance between starting points and Ending points.
+for (i in 1:nrow(df_journeys1)) {
+  df_journeys1$geodistance[i] <-  distm(c(df_journeys1$start.station.longitude[i], df_journeys1$start.station.latitude[i]), c(df_journeys1$end.station.longitude[i], df_journeys1$end.station.latitude[i]), fun = distHaversine)}
+```
+
+### 2.4 Subscribers and Customers:
+
+The dataset divides customers into two groups: Subscribers and Customers. Subscribers pay a yearly fee of around $169, while customers have different options: A one week pass costs $25, while a 24 hour pass costs $9.95. It is important to mention that for subscribers, if the trip is longer than 45 minutes, each additional minute costs $0.15. This customer segmentation is meaningful for the further analysis of the data, because Citi will be able to better determine ways **to convert Customers to Subscribers**, as well as addressing different needs for both groups.
+
+
+## 3. DATA ANALYSIS & INSIGHTS
+------
+
+Based on what we want to achieve and the insights we want to get from this analysis, the work has been based on different social networks principles: strength, weight, closennes, and betweenness. This will allow us to determine the hot spots (busiest bike stations), most frequent start and end stations, congestion, and much more. It is important to keep in mind that the primary goals of the analysis are to identify feasible ways to increase bikes and bike stations, get insights to **place new points of services** for the bank, and increase the quality of service.
+
+```{r}
+# Overall Graph of Trips, seems pretty sparse all around NYC
+register_google(key = "NEW YORK CITY")
+mpls <- get_map(c(left = min(df_journeys$start.station.longitude), 
+                  bottom = min(df_journeys$start.station.latitude), 
+                  right = max(df_journeys$end.station.longitude), 
+                  top = max(df_journeys$end.station.latitude)),
+                maptype='terrain', source='stamen', zoom=13)
+
+df.lines <- df_journeys1 %>%
+  group_by(start.station.longitude,start.station.latitude,end.station.longitude,
+           end.station.latitude,start.station.name,end.station.name) %>%
+  summarize(df_journeys1 = n())
+
+ggmap(mpls,darken = c(.9,"#FFFFFF")) + 
+  geom_segment(data = df.lines,
+               aes(x = start.station.longitude, 
+                   y = start.station.latitude,
+                   xend = end.station.longitude,
+                   yend = end.station.latitude,
+                   alpha = sqrt(df_journeys1)),
+               color = "#000000") + coord_cartesian() +
+  scale_alpha(range = c(0.0001, .5)) +
+  geom_point(data = df.lines %>% 
+               group_by(longitude = start.station.longitude,
+                        latitude = start.station.latitude) %>%
+               summarize(df_journeys1 = sum(df_journeys1)),
+             aes(x = longitude, 
+                 y = latitude,
+                 size = df_journeys1),
+             color="#99004C",alpha=.3) + scale_size_continuous(range(4,100)) +
+  scale_color_viridis_c() + scale_fill_viridis_c() + theme_nothing()
+```
+
+### 3.1 Expand business units
+
+3.1.1 “Age” analysis
+
+The spots of the network with most riders that belong to  the “Young” group means that those customers are more likely to **become new clients** and open a bank account for the first time. They are also more likely to get some specific financial products such as a student loan, first mortgage, and others. In this sense, Citi will focus advertising efforts specifically targeted for new potential clients, as well as placing kiosks that allow new customers to onboard  automatically, by opening a bank account without human assistance. The bank will try to portray a fresh look around this segment. For the other two segments (adults and elderly), the bank will focus on fidelization campaigns with new offerings based on previous financial products they have acquired with Citi, such as **new credit cards** with better rates and other types of benefits for customers who have been with the bank for a long-time. Moreover, from the hotspots of elder groups products such as **retirement plans** will be offered.
+
+```{r}
+# in order to retrieve station names from station id, for later use
+id_names_df <- distinct(df_journeys1[,c("start.station.id", "start.station.name")])
+
+# for trips based on ageGroup: generation
+
+#--- youngsters
+journey_df_generation_young <- df_journeys1 %>% 
+  group_by(ageGroup, start.station.id, start.station.name, end.station.id, end.station.name) %>% 
+  filter(ageGroup == "young") %>%
+  summarize(weights = n())
+
+journey_g_generation_young <- graph_from_data_frame(journey_df_generation_young[, c("start.station.id", "end.station.id")])
+
+journey_g_generation_young$name <- "New York BikeShare Network based on Young Generation"
+E(journey_g_generation_young)$ageGroup <- journey_df_generation_young$ageGroup
+E(journey_g_generation_young)$weight <- journey_df_generation_young$weights
+V(journey_g_generation_young)$degrees <- degree(journey_g_generation_young)
+V(journey_g_generation_young)$strength <- strength(journey_g_generation_young)
+V(journey_g_generation_young)$id <- names(V(journey_g_generation_young))
+V(journey_g_generation_young)$betweenness <- betweenness(journey_g_generation_young)
+
+SBD_young_df <- data.frame(as.integer(V(journey_g_generation_young)$id), 
+                as.integer(V(journey_g_generation_young)$strength),
+                as.integer(V(journey_g_generation_young)$degrees),
+                as.integer(V(journey_g_generation_young)$betweenness))
+
+colnames(SBD_young_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_young_df<- left_join(SBD_young_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_young_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+#---- middleage
+journey_df_generation_middleage <- df_journeys1 %>% 
+  group_by(ageGroup, start.station.id, start.station.name, end.station.id, end.station.name) %>% 
+  filter(ageGroup == "middleage") %>%
+  summarize(weights = n())
+
+journey_g_generation_middleage <- graph_from_data_frame(journey_df_generation_middleage[, c("start.station.id", "end.station.id")])
+
+journey_g_generation_middleage$name <- "New York BikeShare Network based on MiddleAged Generation"
+E(journey_g_generation_middleage)$ageGroup <- journey_df_generation_middleage$ageGroup
+E(journey_g_generation_middleage)$weight <- journey_df_generation_middleage$weights
+V(journey_g_generation_middleage)$degrees <- degree(journey_g_generation_middleage)
+V(journey_g_generation_middleage)$strength <- strength(journey_g_generation_middleage)
+V(journey_g_generation_middleage)$id <- names(V(journey_g_generation_middleage))
+V(journey_g_generation_middleage)$betweenness <- betweenness(journey_g_generation_middleage)
+
+SBD_middleAge_df <- data.frame(as.integer(V(journey_g_generation_middleage)$id), 
+                           as.integer(V(journey_g_generation_middleage)$strength),
+                           as.integer(V(journey_g_generation_middleage)$degrees),
+                           as.integer(V(journey_g_generation_middleage)$betweenness))
+
+colnames(SBD_middleAge_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_middleAge_df<- left_join(SBD_middleAge_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_middleAge_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+#--- eldery
+journey_df_generation_eldery <- df_journeys1 %>% 
+  group_by(ageGroup, start.station.id, start.station.name, end.station.id, end.station.name) %>% 
+  filter(ageGroup == "eldery") %>%
+  summarize(weights = n())
+
+journey_g_generation_elder <- graph_from_data_frame(journey_df_generation_eldery[, c("start.station.id", "end.station.id")])
+
+journey_g_generation_elder$name <- "New York BikeShare Network based on Elder Generation"
+E(journey_g_generation_elder)$ageGroup <- journey_df_generation_eldery$ageGroup
+E(journey_g_generation_elder)$weight <- journey_df_generation_eldery$weights
+V(journey_g_generation_elder)$degrees <- degree(journey_g_generation_elder)
+V(journey_g_generation_elder)$strength <- strength(journey_g_generation_elder)
+V(journey_g_generation_elder)$id <- names(V(journey_g_generation_elder))
+V(journey_g_generation_elder)$betweenness <- betweenness(journey_g_generation_elder)
+
+SBD_eldery_df <- data.frame(as.integer(V(journey_g_generation_elder)$id), 
+                               as.integer(V(journey_g_generation_elder)$strength),
+                               as.integer(V(journey_g_generation_elder)$degrees),
+                               as.integer(V(journey_g_generation_elder)$betweenness))
+
+colnames(SBD_eldery_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_eldery_df<- left_join(SBD_eldery_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_eldery_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+```
+
+
+3.1.2 “User type” analysis
+
+Citi needs to take good care of both the Subscribers and Customers to offer them one of the best alternatives to move around in New York. By principle, it would be the best option to try to convert Customers to Subscribers due to its commitment for a longer term, but since New York is visited the whole year by tourists that want to know the city by bike, it is important to maintain this segment well attended and provide them with a good offer in terms of price and accessibility. In the bike stations where there is a  more significant presence of Subscribers, it would make sense to offer them specific benefits for their segment, such as special discounts for a client by the time he/she has completed a certain amount of rides from one specific station to another. If they repeat the same start and end-station multiple times, it means that they actually use the bikes to move around the two points periodically for a specific purpose.That has to be **rewarded in order to keep increasing the loyalty of Subscribers**. With regards to the Customers segment, we can see that there is a trend in the most frequent stations used. They could get specific benefits that are targeted for users that are not likely to subscribe given different circumstances. Benefits could include discounts for using the service more than once a week and renting it for 24 hours. This would mostly enhance tourists to use the bikes as the principal way of transportation when they visit New York. The following maps and figures reflects that there are **more Customers than Subscribers** using the service:
+
+```{r}
+# Investigate rides of usertypes: Subscriber - Customer
+# for trips based on usertype
+journey_df_user <- df_journeys1 %>% 
+  group_by(usertype, start.station.id, end.station.id) %>% 
+  summarize(weights = n())
+
+journey_g_user <- graph_from_data_frame(journey_df_user[, c("start.station.id", "end.station.id")])
+
+E(journey_g_user)$usertype <- journey_df_user$usertype
+E(journey_g_user)$weight <- journey_df_user$weights
+
+# graph of the ride networks per usertype
+ggraph(journey_g_user, layout = "graphopt") + 
+  geom_edge_link(aes(color = as.factor(usertype), alpha = weight)) +
+  ggtitle("Graph of New York BikeShare Network based on Usertypes")
+
+
+subscribers <- df_journeys1 %>% 
+  # Filter for rows where usertype is Subscriber
+  filter(usertype == "Subscriber")
+
+# Count the number of subscriber trips
+n_subscriber_trips <- nrow(subscribers)
+
+subscriber_trip_graph <- subscribers %>% 
+  # Group by from_station_id and to_station_id
+  group_by(start.station.id, end.station.id) %>% 
+  # Calculate summary statistics
+  summarize(
+    # Set weights as proportion of total trips 
+    weights = n() / n_subscriber_trips
+  ) %>%
+  # Make a graph from the data frame
+  graph_from_data_frame()
+
+# Now for Customers
+customers <- df_journeys1 %>% filter(usertype == "Customer")
+n_customer_trips <- nrow(customers)
+customer_trip_graph <- customers %>% 
+  group_by(start.station.id, end.station.id) %>% 
+  summarize(weights = n() / n_customer_trips) %>%
+  graph_from_data_frame()
+
+
+# Check out which one of customer group is using the service more
+gsize(subscriber_trip_graph)
+gsize(customer_trip_graph)
+#it seems that subscribers beats the casual customers
+
+# for trips based on usertype
+
+# --- Customer (Non-subscriber)
+
+journey_df_user_Customer <- df_journeys1 %>% 
+  group_by(usertype, start.station.id, start.station.name, end.station.id, end.station.name) %>% 
+  filter(usertype == "Customer") %>%
+  summarize(weights = n())
+
+journey_g_user_Customer <- graph_from_data_frame(journey_df_user_Customer[, c("start.station.id", "end.station.id")])
+
+journey_g_user_Customer$name <- "New York BikeShare Network based on Customer Usertype"
+
+E(journey_g_user_Customer)$usertype <- journey_df_user_Customer$usertype
+E(journey_g_user_Customer)$weight <- journey_df_user_Customer$weights
+V(journey_g_user_Customer)$degrees <- degree(journey_g_user_Customer)
+V(journey_g_user_Customer)$strength <- strength(journey_g_user_Customer)
+V(journey_g_user_Customer)$id <- names(V(journey_g_user_Customer))
+V(journey_g_user_Customer)$betweenness <- betweenness(journey_g_user_Customer)
+
+SBD_customer_df <- data.frame(as.integer(V(journey_g_user_Customer)$id), 
+                            as.integer(V(journey_g_user_Customer)$strength),
+                            as.integer(V(journey_g_user_Customer)$degrees),
+                            as.integer(V(journey_g_user_Customer)$betweenness))
+
+colnames(SBD_customer_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_customer_df<- left_join(SBD_customer_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_customer_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+
+# --- Subscriber
+journey_df_user_Subscriber <- df_journeys1 %>% 
+  group_by(usertype, start.station.id, start.station.name, end.station.id, end.station.name) %>% 
+  filter(usertype == "Subscriber") %>%
+  summarize(weights = n())
+
+journey_g_user_Subscriber <- graph_from_data_frame(journey_df_user_Subscriber[, c("start.station.id", "end.station.id")])
+
+journey_g_user_Subscriber$name <- "New York BikeShare Network based on Subscriber Usertype"
+
+E(journey_g_user_Subscriber)$usertype <- journey_df_user_Subscriber$usertype
+E(journey_g_user_Subscriber)$weight <- journey_df_user_Subscriber$weights
+V(journey_g_user_Subscriber)$degrees <- degree(journey_g_user_Subscriber)
+V(journey_g_user_Subscriber)$strength <- strength(journey_g_user_Subscriber)
+V(journey_g_user_Subscriber)$id <- names(V(journey_g_user_Subscriber))
+V(journey_g_user_Subscriber)$betweenness <- betweenness(journey_g_user_Subscriber)
+
+SBD_subscriber_df <- data.frame(as.integer(V(journey_g_user_Subscriber)$id), 
+                              as.integer(V(journey_g_user_Subscriber)$strength),
+                              as.integer(V(journey_g_user_Subscriber)$degrees),
+                              as.integer(V(journey_g_user_Subscriber)$betweenness))
+
+colnames(SBD_subscriber_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_subscriber_df<- left_join(SBD_subscriber_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_subscriber_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+```
+
+
+3.1.3 “Gender” analysis
+
+As previously mentioned, the bank has information about the client’s Gender in the dataset, from which we can get an insight that might be useful for a specific. In this matter, we will refer to the *“Banking on 2030, Citi & the Sustainable Development Goals”* report. The document contains 7 goals in which Citi can contribute to the *United Nations Sustainable Development Goals (SDGs)*. Goal number 5 of the report refers to **gender equality and women empowerment**. As Citi reflects and further explains, they currently have specific products that they intend to expand in order to enhance women entrepreneurship, which could be promoted in specific places around New York where we see a higher amount of women bike riders compared to men bike riders.
+
+```{r}
+# for trips based on gender
+
+# --- male
+df_journeys1$gender[df_journeys1$gender == 0] <- "unknown"
+df_journeys1$gender[df_journeys1$gender == 1] <- "male"
+df_journeys1$gender[df_journeys1$gender == 2] <- "female"
+
+journey_df_gender_male <- df_journeys1 %>% 
+  group_by(gender, start.station.id, start.station.name, end.station.id, end.station.name) %>% 
+  filter(gender == "male") %>%
+  summarize(weights = n())
+
+journey_g_gender_male <- graph_from_data_frame(journey_df_gender_male[, c("start.station.id", "end.station.id")])
+
+journey_g_gender_male$name <- "New York BikeShare Network based on Male Gender"
+
+E(journey_g_gender_male)$gender <- journey_df_gender_male$gender
+E(journey_g_gender_male)$weight <- journey_df_gender_male$weights
+V(journey_g_gender_male)$degrees <- degree(journey_g_gender_male)
+V(journey_g_gender_male)$strength <- strength(journey_g_gender_male)
+V(journey_g_gender_male)$id <- names(V(journey_g_gender_male))
+V(journey_g_gender_male)$betweenness <- betweenness(journey_g_gender_male)
+
+SBD_male_df <- data.frame(as.integer(V(journey_g_gender_male)$id), 
+                                as.integer(V(journey_g_gender_male)$strength),
+                                as.integer(V(journey_g_gender_male)$degrees),
+                                as.integer(V(journey_g_gender_male)$betweenness))
+
+colnames(SBD_male_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_male_df<- left_join(SBD_male_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_male_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+
+# --- female
+journey_df_gender_female <- df_journeys1 %>% 
+  group_by(gender, start.station.id, start.station.name, end.station.id, end.station.name) %>%
+  filter(gender == "female") %>%
+  summarize(weights = n())
+
+journey_g_gender_female <- graph_from_data_frame(journey_df_gender_female[, c("start.station.id", "end.station.id")])
+
+journey_g_gender_female$name <- "New York BikeShare Network based on Female Gender"
+
+E(journey_g_gender_female)$gender <- journey_df_gender_female$gender
+E(journey_g_gender_female)$weight <- journey_df_gender_female$weights
+V(journey_g_gender_female)$degrees <- degree(journey_g_gender_female)
+V(journey_g_gender_female)$strength <- strength(journey_g_gender_female)
+V(journey_g_gender_female)$id <- names(V(journey_g_gender_female))
+V(journey_g_gender_female)$betweenness <- betweenness(journey_g_gender_female)
+
+SBD_female_df <- data.frame(as.integer(V(journey_g_gender_female)$id), 
+                          as.integer(V(journey_g_gender_female)$strength),
+                          as.integer(V(journey_g_gender_female)$degrees),
+                          as.integer(V(journey_g_gender_female)$betweenness))
+
+colnames(SBD_female_df) <- c("start.station.id", "strength", "degree", "betweenness")
+SBD_female_df<- left_join(SBD_female_df, id_names_df)
+
+# Top 5 stations sorted by strength along with other attributes
+SBD_female_df %>% arrange(desc(strength)) %>% head(n= 5)
+
+#----------------------
+
+# Analysis of Ridership percentages by usergroups per each category:
+
+# by Generations:
+percentage_by_age <- data.frame(a = as.integer(gsize(journey_g_generation_young)), 
+                                   b = as.integer(gsize(journey_g_generation_middleage)),
+                                   c = as.integer(gsize(journey_g_generation_elder)))
+
+percentage_by_age %>% transmute(percentage_young = a/(a+b+c), percentage_mid = b/(a+b+c), 
+                                percentage_old = c/(a+b+c))
+#middleAge group seems to use a lot frequent than other groups
+
+# by UserGroups:
+percentage_by_user <- data.frame(e = as.integer(gsize(journey_g_user_Customer)), 
+                                 f = as.integer(gsize(journey_g_user_Subscriber)))
+                                
+percentage_by_user %>% transmute(percentage_Customer = e/(e+f), percentage_Subscriber = f/(e+f))
+
+#Most of the trips are conducted by Subscribers
+
+# by Genders:
+percentage_by_gender <- data.frame(g = as.integer(gsize(journey_g_gender_female)), 
+                                   h = as.integer(gsize(journey_g_gender_male)))
+
+percentage_by_gender %>% transmute(percentage_male = g/(g+h+i), percentage_female = h/(g+h+i))
+#wow, females care more about public-bike in favor public transportation 
+
+```
+
+
+### 3.2 Improve the quality of the current bike service
+
+3.2.1 “Distance between stations” analysis
+
+```{r, fig.cap = "New Bikes with Longlasting Batteries", fig.align = "center", out.width = "400px"}
+include_graphics("https://github.com/LeonLee0717/LeonLee/blob/master/batteries.jpeg?raw=true")
+```
+
+The purpose of this specific analysis is to determine where it would make more sense to **place new stations** and **provide new bikes with higher battery life**. We will address this by taking a look at the stations where there are the furthest distances in the network. To have routes that are actually relevant within the network, we have only considered the ones that have a **weight higher than 50**. After this filter we will consider the ones with **higher geographical distance than 4 km**. From all the records that have both filters mentioned, we will use the top 10 in terms of geographical distance.  We are also able to determine not only the most frequent long rides, but also the stations where bikes are mostly taken from for the long distance rides. It is important that *graph distance is not the same as geographical (real) distance*.
+
+```{r}
+# prepare the dataset to build graph aggregating the trips
+journey_df <- df_journeys1 %>% 
+  group_by(start.station.id, end.station.id) %>% 
+  summarize(weights = n())
+
+journey_g <- graph_from_data_frame(journey_df[, c("start.station.id", "end.station.id")])
+
+#Compare graph distance vs. geographic distance
+farthest_vertices(journey_g) # farthest stations between each other seem to be "3826" and "3127"
+get_diameter(journey_g) # distance on graph it is 13 
+
+
+# now let's calculate real geo distance between those stations
+# Get coordinates of end.station
+st_to <- df_journeys1 %>%
+  filter(start.station.id == 3826) %>%
+  sample_n(1) %>%
+  select(start.station.longitude, start.station.latitude)
+# Get coordinates of from.station
+st_from <- df_journeys1 %>%
+  filter(start.station.id == 3127) %>%
+  sample_n(1) %>%
+  select(start.station.longitude, start.station.latitude)
+  
+# find the geographic distance
+farthest_dist <- distm(st_from, st_to, fun = distHaversine)
+print("As seen, graph distance is pretty different from real distance.")
+farthest_dist
+#8096.6 m which is different than graph distance value which was 13
+
+# Analysis of farthest journeys with Top10 frequency 
+# find out start.stations which have the highest avg. trip distance 
+journey_df <- df_journeys %>% 
+  group_by(start.station.id, start.station.longitude,start.station.latitude, end.station.id,
+           end.station.longitude,end.station.latitude) %>% 
+          summarize(weights = n())
+
+# pick journeys with high frequency, cause sorting only by distance would make no sense if the freq. is very low
+freqjourney_df <- filter(journey_df, weights>50)
+
+# calculate the real distance bet. those trips
+freqjourney_df$geodistance <- 0
+for (i in 1:nrow(freqjourney_df)) {
+  freqjourney_df$geodistance[i] <-  distm(c(freqjourney_df$start.station.longitude[i], freqjourney_df$start.station.latitude[i]), c(freqjourney_df$end.station.longitude[i], freqjourney_df$end.station.latitude[i]), fun = distHaversine)
+}
+
+# to see stats. to define what is "far distance" to determine a threshold
+summary(freqjourney_df)
+
+# filter longer than 4km
+freqjourney_df1 <- freqjourney_df %>% filter(geodistance>4000) %>% as.data.frame() %>% 
+  select(start.station.id, end.station.id, geodistance, weights) %>% 
+  mutate(totalTrip = geodistance * weights)
+
+# create a graph and assign attributes
+far_journeys <- graph_from_data_frame(freqjourney_df1[, c("start.station.id", "end.station.id")])
+E(far_journeys)$weight <- freqjourney_df1$weights
+E(far_journeys)$dist <- freqjourney_df1$totalTrip
+V(far_journeys)$id <- names(V(far_journeys))
+top_far <- E(far_journeys)$totalTrip > 250000
+E(far_journeys)
+
+# Most freq. high distance trips are shown on graph
+plot(far_journeys, layout=layout_with_kk, edge.arrow.width = 0.4, edge.arrow.size = 0.2,
+     margin = 0, vertex.size = 6, edge.width = log(E(far_journeys)$weight), 
+     edge.label = E(far_journeys)$weight)
+
+# calculate average distance per "start.station.id"
+freqjourney_df1 %>% group_by(start.station.id) %>% summarize(avgDist = mean(totalTrip))
+# useful to place high-performance battery bikes
+
+stations_for_longtrips <- freqjourney_df1 %>% group_by(start.station.id) %>% summarize(avgDist = mean(totalTrip)) %>% select(start.station.id)
+
+as.list(stations_for_longtrips)
+```
+
+Here is a map showing the station from which bikes are taken the most for long trips:
+
+```{r,  fig.cap = "NY Citi Bike", fig.align = "center"}
+include_graphics("https://github.com/LeonLee0717/LeonLee/blob/master/Station_longDistance.png?raw=true")
+```
+
+These are the edges, representing the most frequent journeys within the largest distances between stations:
+```{r, fig.align = "center"}
+include_graphics("https://github.com/LeonLee0717/LeonLee/blob/master/Moves.png?raw=true")
+```
+
+3.2.2 “Closeness” cross-check for those stations
+
+New York Citi Bike System has several bike stations that are peripherical and not very close to the city center. Closeness allows us to determine which are the stations that are far from the center of the network. It goes from 0 to 1, the higher the closeness, the shorter the distance to the center. 
+
+We wanted to check the closeness of the stations that we found in the previous analysis, which are far from the center. These stations are very similar in terms of closeness, and the values are right around median. For this reason, we **can not** say that these stations, which are preferred for longer distance, are **located mostly around the periphery of the city**. We compared the closeness of these sets of stations with the overall median of the dataset.
+
+```{r}
+# Analyze these specific stations in terms of closeness
+print(summary(closeness(journey_g)), scientific = FALSE) # gives us median equals to 0.00002569
+
+V(journey_g)$closeness <- closeness(journey_g)
+V(journey_g)$id <- names(V(journey_g))
+overall_closeness_df <- data_frame(V(journey_g)$id, V(journey_g)$closeness)
+
+# See the closeness values of those points, 
+print(overall_closeness_df %>% filter(V(journey_g)$id %in% c("72","281","426","514","525","2006","3680","3724")))
+
+```
+
+3.2.3 :”Imbalance in trip-in trip-out” analysis
+
+The Citi Bike System team has been concerned about an imbalance feedback in terms of trips-in and trips-out between stations and they had a hypothesis that this could be one of the biggest challenges that the system is currently facing. This means that many stations would have more rides starting than ending or vice versa. With this, there would be too many bikes in a station and no place to park them, or not enough bikes in a station for all the rides to start from there. With the following analysis performed, we **were able to refute** this hypothesis, showing that there is **currently no imbalance between stations**. The histogram below shows a normal distribution among stations. There is no substantial skewness in the graph:
+
+```{r}
+# Most Traveled To and From Stations with Weights
+trip_strng <- data_frame(
+  # Find the "out" strength distribution
+  trip_out = strength(journey_g, mode = "out"), 
+  # ... and the "in" strength distribution
+  trip_in = strength(journey_g, mode = "in"),
+  # Calculate the ratio of out / in
+  ratio = trip_out / trip_in
+)
+
+trip_strng_filtered <- trip_strng %>%
+  # Filter for rows where trips in and out are both over 10
+  filter(trip_out > 10, trip_in > 10) 
+
+# Plot histogram of filtered ratios
+hist(trip_strng_filtered$ratio)
+
+```
+
+## 4. CONCLUSION
+------
+
+To sum up, this analysis has identified insights serving to expand business and to improve service quality. Analyzing in detail per Age, Usertype and Gender, **hotspots are highlighted for each category in order to offer relevant banking products and place kiosks**. Hotspot stations are determined by *strength centrality* attribute of each subgroups, accompanied by *betweenness*. Our consulting approach suggests **high strength but low betweenness** out of top 5 stations listed out, **considering no more congestion** placing marketing POPs which would deteriorate the congestion. After identifying hotspot stations, **profiling** is performed by figuring out **percentages of each subgroup** based on number of distances. This potentially help pinpoint what kind of marketing strategies are evolved for segmentated customers.  
+
+Secondly, the network analysis to **detect the stations and routes used frequently for long-distance trips**. These stations and routes are considered to place longlasting battery bikes and to open new stations in between, where the objective is to improve service quality in a particular way. Analysis here, is finalized by **refuting one feedback which claims there is an imbalance on bike stations** in terms of bikes left/bikes taken out.
+
+Working on the analysis of the Citi Bike System in New York provided us with a lot of meaningful information. Since the goal was to get insights to make not only the bike system better, but also to provide the bank itself with relevant outcomes, data needed to be analyzed from different perspectives. By applying multiple social networks methods successfully, we were able to assess many variables for both the bike system and the bank to make decisions for their expansion plans. It is also a comprehensive analysis to enhance the bike system service, by taking into consideration multiple aspects such as age, gender, type of riders, and much more. After a lot of trial and error and discussing the best ways to approach this project, we successfully managed to implement all the concepts learned so far around social networks analysis.
+
+
+## RESOURCES
+
+Link: [Citi Group](https://www.citigroup.com/citi/about/citizenship/download/Banking-on-2030-Citi-and-the-SDGs-Report.pdf?ieNocache=124)
+
+Link: [CitibikeNYC](https://www.citibikenyc.com/about)
+
+Link: [Kepler](https://kepler.gl/)
+
+Link: [schochastics](http://mr.schochastics.net/netVizR.html)
+
+Link: [NiceRide](https://rlang.io/visualizing-bike-share-data-nr2018/)
+
+
+--- End of Document ---
